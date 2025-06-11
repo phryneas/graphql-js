@@ -1,11 +1,8 @@
 {
   "mode": "production",
-  "entry": {
-    "cjs": "./entry.js",
-    "mjs": "./entry-esm.mjs"
-  },
+  "entry": "./entry.js",
   "output": {
-    "filename": "main-[name].cjs",
+    "filename": "main.cjs",
     "library": {
       "type": "commonjs2"
     }

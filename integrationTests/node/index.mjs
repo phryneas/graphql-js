@@ -1,18 +1,7 @@
 import assert from 'node:assert';
-import { readFileSync } from 'node:fs';
 
-import {
-  experimentalExecuteIncrementally,
-  graphqlSync,
-  parse,
-} from 'graphql-esm';
-import { buildSchema } from 'graphql-esm/utilities';
-import { version } from 'graphql-esm/version';
-
-assert.deepStrictEqual(
-  version + '+esm',
-  JSON.parse(readFileSync('./node_modules/graphql-esm/package.json')).version,
-);
+import { experimentalExecuteIncrementally, graphqlSync, parse } from 'graphql';
+import { buildSchema } from 'graphql/utilities';
 
 const schema = buildSchema('type Query { hello: String }');
 
