@@ -87,7 +87,8 @@ async function buildPackage(outDir: string): Promise<void> {
 
   for (const filepath of emittedTSFiles) {
     if (path.basename(filepath) === 'index.js') {
-      const relativePath = './' + path.relative('./npmDist', filepath);
+      const relativePath =
+        './' + crossPlatformRelativePath('./npmDist', filepath);
       packageJSON.exports[path.dirname(relativePath)] = relativePath;
     }
   }
@@ -139,4 +140,12 @@ function emitTSFiles(options: {
   return {
     emittedTSFiles: tsResult.emittedFiles.sort((a, b) => a.localeCompare(b)),
   };
+}
+
+function crossPlatformRelativePath(from: string, to: string): string {
+  const relativePath = path.relative(from, to);
+  if (process.platform !== 'win32') {
+    return relativePath;
+  }
+  return path.posix.format({ ...path.parse(relativePath), root: '' });
 }
