@@ -1,0 +1,11 @@
+{
+  "description": "explicit graphql-js development mode should work with node",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node bootstrap.js"
+  },
+  "dependencies": {
+    "graphql": "file:../graphql.tgz"
+  }
+}
