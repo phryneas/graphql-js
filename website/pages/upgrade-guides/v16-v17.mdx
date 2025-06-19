@@ -12,6 +12,27 @@ import { Callout } from 'nextra/components'
 
 # Breaking changes
 
+## `graphql-js` === ESM-only secondary to improved `require(esm)` support
+
+`graphql-js` has been converted to an ESM only library. Previously, the library included both CJS and ESM versions. This is primarily
+motivated by the release of unflagged support for synchronously `require()`-ing ESM-only modules (that --like our library-- do not use
+top-level `await`).
+
+In conjunction with this change, we have bumped the minimum required Node.JS versions to `20.19.0`, `22.12.0`, or `23.0.0` and above.
+
+For more information, see:
+- https://joyeecheung.github.io/blog/2024/03/18/require-esm-in-node-js/
+- https://nodejs.org/en/blog/release/v23.0.0
+- https://nodejs.org/en/blog/release/v22.12.0
+- https://nodejs.org/en/blog/release/v20.19.0
+
+This exact behavior is also supported in other runtimes such as [Bun](https://bun.sh/docs/runtime/modules#top-level-await) and
+[Deno](https://docs.deno.com/runtime/fundamentals/node/#require(esm)). 
+
+## Development checks no longer depend on the `NODE_ENV` environment variable.
+
+...
+
 ## Default values
 
 GraphQL schemas allow default values for input fields and arguments. Historically, GraphQL.js did not rigorously validate or coerce these

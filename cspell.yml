@@ -40,7 +40,8 @@ overrides:
       - tada
       - Graphile
       - precompiled
-      - debuggable
+      - Rollup
+      - Turbopack
 
 validateDirectives: true
 ignoreRegExpList:
