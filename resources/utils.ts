@@ -234,7 +234,15 @@ interface PackageJSON {
   repository?: { url?: string };
   scripts?: { [name: string]: string };
   type?: string;
-  exports: { [path: string]: string };
+  sideEffects?: boolean | Array<string>;
+  exports: {
+    [path: string]:
+      | string
+      | {
+          development: string;
+          default: string;
+        };
+  };
   types?: string;
   typesVersions: { [ranges: string]: { [path: string]: Array<string> } };
   devDependencies?: { [name: string]: string };

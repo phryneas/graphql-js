@@ -12,7 +12,9 @@
       ]
     }
   },
-  "sideEffects": false,
+  "sideEffects": [
+    "./dev/index.js"
+  ],
   "homepage": "https://github.com/graphql/graphql-js",
   "bugs": {
     "url": "https://github.com/graphql/graphql-js/issues"

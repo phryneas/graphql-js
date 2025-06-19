@@ -19,11 +19,14 @@ await buildPackage('./npmDist');
 showDirStats('./npmDist');
 
 async function buildPackage(outDir: string): Promise<void> {
+  const devDir = path.join(outDir, '__dev__');
+
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir);
+  fs.mkdirSync(devDir);
 
-  fs.copyFileSync('./LICENSE', `./${outDir}/LICENSE`);
-  fs.copyFileSync('./README.md', `./${outDir}/README.md`);
+  fs.copyFileSync('./LICENSE', `${outDir}/LICENSE`);
+  fs.copyFileSync('./README.md', `${outDir}/README.md`);
 
   const packageJSON = readPackageJSON();
 
@@ -85,17 +88,61 @@ async function buildPackage(outDir: string): Promise<void> {
     extension: '.js',
   });
 
-  for (const filepath of emittedTSFiles) {
-    if (path.basename(filepath) === 'index.js') {
-      const relativePath =
-        './' + crossPlatformRelativePath('./npmDist', filepath);
-      packageJSON.exports[path.dirname(relativePath)] = relativePath;
+  for (const prodFile of emittedTSFiles) {
+    const { dir, base } = path.parse(prodFile);
+
+    const match = base.match(/^([^.]*)\.?(.*)$/);
+    assert(match);
+    const [, name, ext] = match;
+
+    if (ext === 'js.map') {
+      continue;
+    } else if (path.basename(dir) === 'dev') {
+      packageJSON.exports['./dev'] = './dev/index.js';
+      continue;
+    }
+
+    const relativePathToProd = crossPlatformRelativePath(prodFile, outDir);
+    const relativePathAndName = crossPlatformRelativePath(
+      outDir,
+      `${dir}/${name}`,
+    );
+
+    const lines =
+      ext === 'd.ts' ? [] : [`import '${relativePathToProd}/dev/index.js';`];
+    lines.push(
+      `export * from '${relativePathToProd}/${relativePathAndName}.js';`,
+    );
+    const body = lines.join('\n');
+
+    writeGeneratedFile(
+      path.join(devDir, path.relative(outDir, prodFile)),
+      body,
+    );
+
+    if (base === 'index.js') {
+      const dirname = path.dirname(relativePathAndName);
+      packageJSON.exports[dirname === '.' ? dirname : `./${dirname}`] = {
+        development: `./__dev__/${relativePathAndName}.js`,
+        default: `./${relativePathAndName}.js`,
+      };
     }
   }
 
   // Temporary workaround to allow "internal" imports, no grantees provided
-  packageJSON.exports['./*.js'] = './*.js';
-  packageJSON.exports['./*'] = './*.js';
+  packageJSON.exports['./*.js'] = {
+    development: './__dev__/*.js',
+    default: './*.js',
+  };
+  packageJSON.exports['./*'] = {
+    development: './__dev__/*.js',
+    default: './*.js',
+  };
+
+  packageJSON.sideEffects = [
+    ...(packageJSON.sideEffects as Array<string>),
+    '__dev__/*',
+  ];
 
   const packageJsonPath = `./${outDir}/package.json`;
   const prettified = await prettify(
@@ -127,7 +174,11 @@ function emitTSFiles(options: {
   const tsHost = ts.createCompilerHost(tsOptions);
   tsHost.writeFile = (filepath, body) => writeGeneratedFile(filepath, body);
 
-  const tsProgram = ts.createProgram(['src/index.ts'], tsOptions, tsHost);
+  const tsProgram = ts.createProgram(
+    ['src/index.ts', 'src/dev/index.ts'],
+    tsOptions,
+    tsHost,
+  );
   const tsResult = tsProgram.emit(undefined, undefined, undefined, undefined, {
     after: [changeExtensionInImportPaths({ extension }), inlineInvariant],
   });
