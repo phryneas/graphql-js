@@ -1,12 +1,7 @@
 import { expect } from 'chai';
 import { describe, it } from 'mocha';
 
-import { developmentInstanceOfCheck } from '../../dev/index.js';
-
-(globalThis as any)[Symbol.for('graphql.instanceOfCheck')] =
-  developmentInstanceOfCheck;
-
-const { instanceOf } = await import(`../instanceOf.js?ts${Date.now()}`);
+import { instanceOf } from '../../dev/index.development.js';
 
 describe('instanceOf', () => {
   it('do not throw on values without prototype', () => {

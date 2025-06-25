@@ -19,7 +19,9 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "forceConsistentCasingInFileNames": true,
-
+    "paths": {
+      "graphql/*": ["./src/*/index.ts"]
+    },
     // Type Checking
     // https://www.typescriptlang.org/tsconfig#Type_Checking_6248
     "strict": true,

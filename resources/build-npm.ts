@@ -19,11 +19,8 @@ await buildPackage('./npmDist');
 showDirStats('./npmDist');
 
 async function buildPackage(outDir: string): Promise<void> {
-  const devDir = path.join(outDir, '__dev__');
-
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir);
-  fs.mkdirSync(devDir);
 
   fs.copyFileSync('./LICENSE', `${outDir}/LICENSE`);
   fs.copyFileSync('./README.md', `${outDir}/README.md`);
@@ -80,7 +77,12 @@ async function buildPackage(outDir: string): Promise<void> {
       'Publish tag and version tag should match!',
     );
   }
-  packageJSON.exports = {};
+  packageJSON.exports = {
+    './dev': {
+      development: './dev/index.development.js',
+      default: './dev/index.js',
+    },
+  };
 
   const { emittedTSFiles } = emitTSFiles({
     outDir,
@@ -98,46 +100,23 @@ async function buildPackage(outDir: string): Promise<void> {
     if (ext === 'js.map') {
       continue;
     } else if (path.basename(dir) === 'dev') {
-      packageJSON.exports['./dev'] = './dev/index.js';
       continue;
     }
-
-    const relativePathToProd = crossPlatformRelativePath(prodFile, outDir);
     const relativePathAndName = crossPlatformRelativePath(
       outDir,
       `${dir}/${name}`,
     );
 
-    const lines =
-      ext === 'd.ts' ? [] : [`import '${relativePathToProd}/dev/index.js';`];
-    lines.push(
-      `export * from '${relativePathToProd}/${relativePathAndName}.js';`,
-    );
-    const body = lines.join('\n');
-
-    writeGeneratedFile(
-      path.join(devDir, path.relative(outDir, prodFile)),
-      body,
-    );
-
     if (base === 'index.js') {
       const dirname = path.dirname(relativePathAndName);
-      packageJSON.exports[dirname === '.' ? dirname : `./${dirname}`] = {
-        development: `./__dev__/${relativePathAndName}.js`,
-        default: `./${relativePathAndName}.js`,
-      };
+      packageJSON.exports[dirname === '.' ? dirname : `./${dirname}`] =
+        `./${relativePathAndName}.js`;
     }
   }
 
   // Temporary workaround to allow "internal" imports, no grantees provided
-  packageJSON.exports['./*.js'] = {
-    development: './__dev__/*.js',
-    default: './*.js',
-  };
-  packageJSON.exports['./*'] = {
-    development: './__dev__/*.js',
-    default: './*.js',
-  };
+  packageJSON.exports['./*.js'] = './*.js';
+  packageJSON.exports['./*'] = './*.js';
 
   packageJSON.sideEffects = [
     ...(packageJSON.sideEffects as Array<string>),
@@ -175,7 +154,7 @@ function emitTSFiles(options: {
   tsHost.writeFile = (filepath, body) => writeGeneratedFile(filepath, body);
 
   const tsProgram = ts.createProgram(
-    ['src/index.ts', 'src/dev/index.ts'],
+    ['src/index.ts', 'src/dev/index.ts', 'src/dev/index.development.ts'],
     tsOptions,
     tsHost,
   );
