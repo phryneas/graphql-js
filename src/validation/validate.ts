@@ -4,7 +4,8 @@ import type { Maybe } from '../jsutils/Maybe';
 
 import { GraphQLError } from '../error/GraphQLError';
 
-import { type DocumentNode, QueryDocumentKeys } from '../language/ast';
+import type { DocumentNode } from '../language/ast';
+import { QueryDocumentKeys } from '../language/ast';
 import { visit, visitInParallel } from '../language/visitor';
 
 import type { GraphQLSchema } from '../type/schema';
