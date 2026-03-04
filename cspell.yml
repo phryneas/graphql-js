@@ -70,6 +70,7 @@ words:
   # TODO: contribute upstream
   - deno
   - codecov
+  - preid
 
   # Website tech
   - Nextra
