@@ -29,6 +29,8 @@ import {
   isObjectType,
 } from '../../type/definition';
 
+import type { SchedulableIterable } from '../../utilities/scheduling';
+import { makeSchedulable, scheduler } from '../../utilities/scheduling';
 import { sortValueNode } from '../../utilities/sortValueNode';
 import { typeFromAST } from '../../utilities/typeFromAST';
 
@@ -74,14 +76,20 @@ export function OverlappingFieldsCanBeMergedRule(
   const cachedFieldsAndFragmentNames = new Map();
 
   return {
-    SelectionSet(selectionSet) {
-      const conflicts = findConflictsWithinSelectionSet(
-        context,
-        cachedFieldsAndFragmentNames,
-        comparedFieldsAndFragmentPairs,
-        comparedFragmentPairs,
-        context.getParentType(),
-        selectionSet,
+    SelectionSet: makeSchedulable(function* SelectionSetImpl(
+      selectionSet,
+    ): SchedulableIterable<void> {
+      const conflicts = yield* scheduler.execute(
+        findConflictsWithinSelectionSet,
+        null,
+        [
+          context,
+          cachedFieldsAndFragmentNames,
+          comparedFieldsAndFragmentPairs,
+          comparedFragmentPairs,
+          context.getParentType(),
+          selectionSet,
+        ],
       );
       for (const [[responseName, reason], fields1, fields2] of conflicts) {
         const reasonMsg = reasonMessage(reason);
@@ -92,7 +100,7 @@ export function OverlappingFieldsCanBeMergedRule(
           ),
         );
       }
-    },
+    }),
   };
 }
 
@@ -170,281 +178,217 @@ type FieldsAndFragmentNames = readonly [NodeAndDefCollection, FragmentNames];
 // Find all conflicts found "within" a selection set, including those found
 // via spreading in fragments. Called when visiting each SelectionSet in the
 // GraphQL Document.
-function findConflictsWithinSelectionSet(
-  context: ValidationContext,
-  cachedFieldsAndFragmentNames: Map<SelectionSetNode, FieldsAndFragmentNames>,
-  comparedFieldsAndFragmentPairs: OrderedPairSet<NodeAndDefCollection, string>,
-  comparedFragmentPairs: PairSet<string>,
-  parentType: Maybe<GraphQLNamedType>,
-  selectionSet: SelectionSetNode,
-): Array<Conflict> {
-  const conflicts: Array<Conflict> = [];
+const findConflictsWithinSelectionSet = makeSchedulable(
+  function* findConflictsWithinSelectionSetImpl(
+    context: ValidationContext,
+    cachedFieldsAndFragmentNames: Map<SelectionSetNode, FieldsAndFragmentNames>,
+    comparedFieldsAndFragmentPairs: OrderedPairSet<
+      NodeAndDefCollection,
+      string
+    >,
+    comparedFragmentPairs: PairSet<string>,
+    parentType: Maybe<GraphQLNamedType>,
+    selectionSet: SelectionSetNode,
+  ): SchedulableIterable<Array<Conflict>> {
+    const conflicts: Array<Conflict> = [];
 
-  const [fieldMap, fragmentNames] = getFieldsAndFragmentNames(
-    context,
-    cachedFieldsAndFragmentNames,
-    parentType,
-    selectionSet,
-  );
+    const [fieldMap, fragmentNames] = getFieldsAndFragmentNames(
+      context,
+      cachedFieldsAndFragmentNames,
+      parentType,
+      selectionSet,
+    );
 
-  // (A) Find find all conflicts "within" the fields of this selection set.
-  // Note: this is the *only place* `collectConflictsWithin` is called.
-  collectConflictsWithin(
-    context,
-    conflicts,
-    cachedFieldsAndFragmentNames,
-    comparedFieldsAndFragmentPairs,
-    comparedFragmentPairs,
-    fieldMap,
-  );
+    // (A) Find find all conflicts "within" the fields of this selection set.
+    // Note: this is the *only place* `collectConflictsWithin` is called.
+    yield* scheduler.execute(collectConflictsWithin, null, [
+      context,
+      conflicts,
+      cachedFieldsAndFragmentNames,
+      comparedFieldsAndFragmentPairs,
+      comparedFragmentPairs,
+      fieldMap,
+    ]);
 
-  if (fragmentNames.length !== 0) {
-    // (B) Then collect conflicts between these fields and those represented by
-    // each spread fragment name found.
-    for (let i = 0; i < fragmentNames.length; i++) {
-      collectConflictsBetweenFieldsAndFragment(
+    if (fragmentNames.length !== 0) {
+      // (B) Then collect conflicts between these fields and those represented by
+      // each spread fragment name found.
+      for (let i = 0; i < fragmentNames.length; i++) {
+        yield* scheduler.execute(
+          collectConflictsBetweenFieldsAndFragment,
+          null,
+          [
+            context,
+            conflicts,
+            cachedFieldsAndFragmentNames,
+            comparedFieldsAndFragmentPairs,
+            comparedFragmentPairs,
+            false,
+            fieldMap,
+            fragmentNames[i],
+          ],
+        );
+        // (C) Then compare this fragment with all other fragments found in this
+        // selection set to collect conflicts between fragments spread together.
+        // This compares each item in the list of fragment names to every other
+        // item in that same list (except for itself).
+        for (let j = i + 1; j < fragmentNames.length; j++) {
+          yield* scheduler.execute(collectConflictsBetweenFragments, null, [
+            context,
+            conflicts,
+            cachedFieldsAndFragmentNames,
+            comparedFieldsAndFragmentPairs,
+            comparedFragmentPairs,
+            false,
+            fragmentNames[i],
+            fragmentNames[j],
+          ]);
+        }
+      }
+    }
+    return conflicts;
+  },
+);
+
+// Collect all conflicts found between a set of fields and a fragment reference
+// including via spreading in any nested fragments.
+const collectConflictsBetweenFieldsAndFragment = makeSchedulable(
+  function* collectConflictsBetweenFieldsAndFragmentImpl(
+    context: ValidationContext,
+    conflicts: Array<Conflict>,
+    cachedFieldsAndFragmentNames: Map<SelectionSetNode, FieldsAndFragmentNames>,
+    comparedFieldsAndFragmentPairs: OrderedPairSet<
+      NodeAndDefCollection,
+      string
+    >,
+    comparedFragmentPairs: PairSet<string>,
+    areMutuallyExclusive: boolean,
+    fieldMap: NodeAndDefCollection,
+    fragmentName: string,
+  ): SchedulableIterable<void> {
+    // Memoize so the fields and fragments are not compared for conflicts more
+    // than once.
+    if (
+      comparedFieldsAndFragmentPairs.has(
+        fieldMap,
+        fragmentName,
+        areMutuallyExclusive,
+      )
+    ) {
+      return;
+    }
+    comparedFieldsAndFragmentPairs.add(
+      fieldMap,
+      fragmentName,
+      areMutuallyExclusive,
+    );
+
+    const fragment = context.getFragment(fragmentName);
+    if (!fragment) {
+      return;
+    }
+
+    const [fieldMap2, referencedFragmentNames] =
+      getReferencedFieldsAndFragmentNames(
+        context,
+        cachedFieldsAndFragmentNames,
+        fragment,
+      );
+
+    // Do not compare a fragment's fieldMap to itself.
+    if (fieldMap === fieldMap2) {
+      return;
+    }
+
+    // (D) First collect any conflicts between the provided collection of fields
+    // and the collection of fields represented by the given fragment.
+    yield* scheduler.execute(collectConflictsBetween, null, [
+      context,
+      conflicts,
+      cachedFieldsAndFragmentNames,
+      comparedFieldsAndFragmentPairs,
+      comparedFragmentPairs,
+      areMutuallyExclusive,
+      fieldMap,
+      fieldMap2,
+    ]);
+
+    // (E) Then collect any conflicts between the provided collection of fields
+    // and any fragment names found in the given fragment.
+    for (const referencedFragmentName of referencedFragmentNames) {
+      yield* scheduler.execute(collectConflictsBetweenFieldsAndFragment, null, [
         context,
         conflicts,
         cachedFieldsAndFragmentNames,
         comparedFieldsAndFragmentPairs,
         comparedFragmentPairs,
-        false,
+        areMutuallyExclusive,
         fieldMap,
-        fragmentNames[i],
-      );
-      // (C) Then compare this fragment with all other fragments found in this
-      // selection set to collect conflicts between fragments spread together.
-      // This compares each item in the list of fragment names to every other
-      // item in that same list (except for itself).
-      for (let j = i + 1; j < fragmentNames.length; j++) {
-        collectConflictsBetweenFragments(
-          context,
-          conflicts,
-          cachedFieldsAndFragmentNames,
-          comparedFieldsAndFragmentPairs,
-          comparedFragmentPairs,
-          false,
-          fragmentNames[i],
-          fragmentNames[j],
-        );
-      }
+        referencedFragmentName,
+      ]);
     }
-  }
-  return conflicts;
-}
-
-// Collect all conflicts found between a set of fields and a fragment reference
-// including via spreading in any nested fragments.
-function collectConflictsBetweenFieldsAndFragment(
-  context: ValidationContext,
-  conflicts: Array<Conflict>,
-  cachedFieldsAndFragmentNames: Map<SelectionSetNode, FieldsAndFragmentNames>,
-  comparedFieldsAndFragmentPairs: OrderedPairSet<NodeAndDefCollection, string>,
-  comparedFragmentPairs: PairSet<string>,
-  areMutuallyExclusive: boolean,
-  fieldMap: NodeAndDefCollection,
-  fragmentName: string,
-): void {
-  // Memoize so the fields and fragments are not compared for conflicts more
-  // than once.
-  if (
-    comparedFieldsAndFragmentPairs.has(
-      fieldMap,
-      fragmentName,
-      areMutuallyExclusive,
-    )
-  ) {
-    return;
-  }
-  comparedFieldsAndFragmentPairs.add(
-    fieldMap,
-    fragmentName,
-    areMutuallyExclusive,
-  );
-
-  const fragment = context.getFragment(fragmentName);
-  if (!fragment) {
-    return;
-  }
-
-  const [fieldMap2, referencedFragmentNames] =
-    getReferencedFieldsAndFragmentNames(
-      context,
-      cachedFieldsAndFragmentNames,
-      fragment,
-    );
-
-  // Do not compare a fragment's fieldMap to itself.
-  if (fieldMap === fieldMap2) {
-    return;
-  }
-
-  // (D) First collect any conflicts between the provided collection of fields
-  // and the collection of fields represented by the given fragment.
-  collectConflictsBetween(
-    context,
-    conflicts,
-    cachedFieldsAndFragmentNames,
-    comparedFieldsAndFragmentPairs,
-    comparedFragmentPairs,
-    areMutuallyExclusive,
-    fieldMap,
-    fieldMap2,
-  );
-
-  // (E) Then collect any conflicts between the provided collection of fields
-  // and any fragment names found in the given fragment.
-  for (const referencedFragmentName of referencedFragmentNames) {
-    collectConflictsBetweenFieldsAndFragment(
-      context,
-      conflicts,
-      cachedFieldsAndFragmentNames,
-      comparedFieldsAndFragmentPairs,
-      comparedFragmentPairs,
-      areMutuallyExclusive,
-      fieldMap,
-      referencedFragmentName,
-    );
-  }
-}
+  },
+);
 
 // Collect all conflicts found between two fragments, including via spreading in
 // any nested fragments.
-function collectConflictsBetweenFragments(
-  context: ValidationContext,
-  conflicts: Array<Conflict>,
-  cachedFieldsAndFragmentNames: Map<SelectionSetNode, FieldsAndFragmentNames>,
-  comparedFieldsAndFragmentPairs: OrderedPairSet<NodeAndDefCollection, string>,
-  comparedFragmentPairs: PairSet<string>,
-  areMutuallyExclusive: boolean,
-  fragmentName1: string,
-  fragmentName2: string,
-): void {
-  // No need to compare a fragment to itself.
-  if (fragmentName1 === fragmentName2) {
-    return;
-  }
+const collectConflictsBetweenFragments = makeSchedulable(
+  function* collectConflictsBetweenFragmentsImpl(
+    context: ValidationContext,
+    conflicts: Array<Conflict>,
+    cachedFieldsAndFragmentNames: Map<SelectionSetNode, FieldsAndFragmentNames>,
+    comparedFieldsAndFragmentPairs: OrderedPairSet<
+      NodeAndDefCollection,
+      string
+    >,
+    comparedFragmentPairs: PairSet<string>,
+    areMutuallyExclusive: boolean,
+    fragmentName1: string,
+    fragmentName2: string,
+  ): SchedulableIterable<void> {
+    // No need to compare a fragment to itself.
+    if (fragmentName1 === fragmentName2) {
+      return;
+    }
 
-  // Memoize so two fragments are not compared for conflicts more than once.
-  if (
-    comparedFragmentPairs.has(
+    // Memoize so two fragments are not compared for conflicts more than once.
+    if (
+      comparedFragmentPairs.has(
+        fragmentName1,
+        fragmentName2,
+        areMutuallyExclusive,
+      )
+    ) {
+      return;
+    }
+    comparedFragmentPairs.add(
       fragmentName1,
       fragmentName2,
       areMutuallyExclusive,
-    )
-  ) {
-    return;
-  }
-  comparedFragmentPairs.add(fragmentName1, fragmentName2, areMutuallyExclusive);
-
-  const fragment1 = context.getFragment(fragmentName1);
-  const fragment2 = context.getFragment(fragmentName2);
-  if (!fragment1 || !fragment2) {
-    return;
-  }
-
-  const [fieldMap1, referencedFragmentNames1] =
-    getReferencedFieldsAndFragmentNames(
-      context,
-      cachedFieldsAndFragmentNames,
-      fragment1,
-    );
-  const [fieldMap2, referencedFragmentNames2] =
-    getReferencedFieldsAndFragmentNames(
-      context,
-      cachedFieldsAndFragmentNames,
-      fragment2,
     );
 
-  // (F) First, collect all conflicts between these two collections of fields
-  // (not including any nested fragments).
-  collectConflictsBetween(
-    context,
-    conflicts,
-    cachedFieldsAndFragmentNames,
-    comparedFieldsAndFragmentPairs,
-    comparedFragmentPairs,
-    areMutuallyExclusive,
-    fieldMap1,
-    fieldMap2,
-  );
+    const fragment1 = context.getFragment(fragmentName1);
+    const fragment2 = context.getFragment(fragmentName2);
+    if (!fragment1 || !fragment2) {
+      return;
+    }
 
-  // (G) Then collect conflicts between the first fragment and any nested
-  // fragments spread in the second fragment.
-  for (const referencedFragmentName2 of referencedFragmentNames2) {
-    collectConflictsBetweenFragments(
-      context,
-      conflicts,
-      cachedFieldsAndFragmentNames,
-      comparedFieldsAndFragmentPairs,
-      comparedFragmentPairs,
-      areMutuallyExclusive,
-      fragmentName1,
-      referencedFragmentName2,
-    );
-  }
+    const [fieldMap1, referencedFragmentNames1] =
+      getReferencedFieldsAndFragmentNames(
+        context,
+        cachedFieldsAndFragmentNames,
+        fragment1,
+      );
+    const [fieldMap2, referencedFragmentNames2] =
+      getReferencedFieldsAndFragmentNames(
+        context,
+        cachedFieldsAndFragmentNames,
+        fragment2,
+      );
 
-  // (G) Then collect conflicts between the second fragment and any nested
-  // fragments spread in the first fragment.
-  for (const referencedFragmentName1 of referencedFragmentNames1) {
-    collectConflictsBetweenFragments(
-      context,
-      conflicts,
-      cachedFieldsAndFragmentNames,
-      comparedFieldsAndFragmentPairs,
-      comparedFragmentPairs,
-      areMutuallyExclusive,
-      referencedFragmentName1,
-      fragmentName2,
-    );
-  }
-}
-
-// Find all conflicts found between two selection sets, including those found
-// via spreading in fragments. Called when determining if conflicts exist
-// between the sub-fields of two overlapping fields.
-function findConflictsBetweenSubSelectionSets(
-  context: ValidationContext,
-  cachedFieldsAndFragmentNames: Map<SelectionSetNode, FieldsAndFragmentNames>,
-  comparedFieldsAndFragmentPairs: OrderedPairSet<NodeAndDefCollection, string>,
-  comparedFragmentPairs: PairSet<string>,
-  areMutuallyExclusive: boolean,
-  parentType1: Maybe<GraphQLNamedType>,
-  selectionSet1: SelectionSetNode,
-  parentType2: Maybe<GraphQLNamedType>,
-  selectionSet2: SelectionSetNode,
-): Array<Conflict> {
-  const conflicts: Array<Conflict> = [];
-
-  const [fieldMap1, fragmentNames1] = getFieldsAndFragmentNames(
-    context,
-    cachedFieldsAndFragmentNames,
-    parentType1,
-    selectionSet1,
-  );
-  const [fieldMap2, fragmentNames2] = getFieldsAndFragmentNames(
-    context,
-    cachedFieldsAndFragmentNames,
-    parentType2,
-    selectionSet2,
-  );
-
-  // (H) First, collect all conflicts between these two collections of field.
-  collectConflictsBetween(
-    context,
-    conflicts,
-    cachedFieldsAndFragmentNames,
-    comparedFieldsAndFragmentPairs,
-    comparedFragmentPairs,
-    areMutuallyExclusive,
-    fieldMap1,
-    fieldMap2,
-  );
-
-  // (I) Then collect conflicts between the first collection of fields and
-  // those referenced by each fragment name associated with the second.
-  for (const fragmentName2 of fragmentNames2) {
-    collectConflictsBetweenFieldsAndFragment(
+    // (F) First, collect all conflicts between these two collections of fields
+    // (not including any nested fragments).
+    yield* scheduler.execute(collectConflictsBetween, null, [
       context,
       conflicts,
       cachedFieldsAndFragmentNames,
@@ -452,31 +396,13 @@ function findConflictsBetweenSubSelectionSets(
       comparedFragmentPairs,
       areMutuallyExclusive,
       fieldMap1,
-      fragmentName2,
-    );
-  }
-
-  // (I) Then collect conflicts between the second collection of fields and
-  // those referenced by each fragment name associated with the first.
-  for (const fragmentName1 of fragmentNames1) {
-    collectConflictsBetweenFieldsAndFragment(
-      context,
-      conflicts,
-      cachedFieldsAndFragmentNames,
-      comparedFieldsAndFragmentPairs,
-      comparedFragmentPairs,
-      areMutuallyExclusive,
       fieldMap2,
-      fragmentName1,
-    );
-  }
+    ]);
 
-  // (J) Also collect conflicts between any fragment names by the first and
-  // fragment names by the second. This compares each item in the first set of
-  // names to each item in the second set of names.
-  for (const fragmentName1 of fragmentNames1) {
-    for (const fragmentName2 of fragmentNames2) {
-      collectConflictsBetweenFragments(
+    // (G) Then collect conflicts between the first fragment and any nested
+    // fragments spread in the second fragment.
+    for (const referencedFragmentName2 of referencedFragmentNames2) {
+      yield* scheduler.execute(collectConflictsBetweenFragments, null, [
         context,
         conflicts,
         cachedFieldsAndFragmentNames,
@@ -484,99 +410,227 @@ function findConflictsBetweenSubSelectionSets(
         comparedFragmentPairs,
         areMutuallyExclusive,
         fragmentName1,
-        fragmentName2,
-      );
+        referencedFragmentName2,
+      ]);
     }
-  }
-  return conflicts;
-}
+
+    // (G) Then collect conflicts between the second fragment and any nested
+    // fragments spread in the first fragment.
+    for (const referencedFragmentName1 of referencedFragmentNames1) {
+      yield* scheduler.execute(collectConflictsBetweenFragments, null, [
+        context,
+        conflicts,
+        cachedFieldsAndFragmentNames,
+        comparedFieldsAndFragmentPairs,
+        comparedFragmentPairs,
+        areMutuallyExclusive,
+        referencedFragmentName1,
+        fragmentName2,
+      ]);
+    }
+  },
+);
+
+// Find all conflicts found between two selection sets, including those found
+// via spreading in fragments. Called when determining if conflicts exist
+// between the sub-fields of two overlapping fields.
+const findConflictsBetweenSubSelectionSets = makeSchedulable(
+  function* findConflictsBetweenSubSelectionSetsImpl(
+    context: ValidationContext,
+    cachedFieldsAndFragmentNames: Map<SelectionSetNode, FieldsAndFragmentNames>,
+    comparedFieldsAndFragmentPairs: OrderedPairSet<
+      NodeAndDefCollection,
+      string
+    >,
+    comparedFragmentPairs: PairSet<string>,
+    areMutuallyExclusive: boolean,
+    parentType1: Maybe<GraphQLNamedType>,
+    selectionSet1: SelectionSetNode,
+    parentType2: Maybe<GraphQLNamedType>,
+    selectionSet2: SelectionSetNode,
+  ): SchedulableIterable<Array<Conflict>> {
+    const conflicts: Array<Conflict> = [];
+
+    const [fieldMap1, fragmentNames1] = getFieldsAndFragmentNames(
+      context,
+      cachedFieldsAndFragmentNames,
+      parentType1,
+      selectionSet1,
+    );
+    const [fieldMap2, fragmentNames2] = getFieldsAndFragmentNames(
+      context,
+      cachedFieldsAndFragmentNames,
+      parentType2,
+      selectionSet2,
+    );
+
+    // (H) First, collect all conflicts between these two collections of field.
+    yield* scheduler.execute(collectConflictsBetween, null, [
+      context,
+      conflicts,
+      cachedFieldsAndFragmentNames,
+      comparedFieldsAndFragmentPairs,
+      comparedFragmentPairs,
+      areMutuallyExclusive,
+      fieldMap1,
+      fieldMap2,
+    ]);
+
+    // (I) Then collect conflicts between the first collection of fields and
+    // those referenced by each fragment name associated with the second.
+    for (const fragmentName2 of fragmentNames2) {
+      yield* scheduler.execute(collectConflictsBetweenFieldsAndFragment, null, [
+        context,
+        conflicts,
+        cachedFieldsAndFragmentNames,
+        comparedFieldsAndFragmentPairs,
+        comparedFragmentPairs,
+        areMutuallyExclusive,
+        fieldMap1,
+        fragmentName2,
+      ]);
+    }
+
+    // (I) Then collect conflicts between the second collection of fields and
+    // those referenced by each fragment name associated with the first.
+    for (const fragmentName1 of fragmentNames1) {
+      yield* scheduler.execute(collectConflictsBetweenFieldsAndFragment, null, [
+        context,
+        conflicts,
+        cachedFieldsAndFragmentNames,
+        comparedFieldsAndFragmentPairs,
+        comparedFragmentPairs,
+        areMutuallyExclusive,
+        fieldMap2,
+        fragmentName1,
+      ]);
+    }
+
+    // (J) Also collect conflicts between any fragment names by the first and
+    // fragment names by the second. This compares each item in the first set of
+    // names to each item in the second set of names.
+    for (const fragmentName1 of fragmentNames1) {
+      for (const fragmentName2 of fragmentNames2) {
+        yield* scheduler.execute(collectConflictsBetweenFragments, null, [
+          context,
+          conflicts,
+          cachedFieldsAndFragmentNames,
+          comparedFieldsAndFragmentPairs,
+          comparedFragmentPairs,
+          areMutuallyExclusive,
+          fragmentName1,
+          fragmentName2,
+        ]);
+      }
+    }
+    return conflicts;
+  },
+);
 
 // Collect all Conflicts "within" one collection of fields.
-function collectConflictsWithin(
-  context: ValidationContext,
-  conflicts: Array<Conflict>,
-  cachedFieldsAndFragmentNames: Map<SelectionSetNode, FieldsAndFragmentNames>,
-  comparedFieldsAndFragmentPairs: OrderedPairSet<NodeAndDefCollection, string>,
-  comparedFragmentPairs: PairSet<string>,
-  fieldMap: NodeAndDefCollection,
-): void {
-  // A field map is a keyed collection, where each key represents a response
-  // name and the value at that key is a list of all fields which provide that
-  // response name. For every response name, if there are multiple fields, they
-  // must be compared to find a potential conflict.
-  for (const [responseName, fields] of Object.entries(fieldMap)) {
-    // This compares every field in the list to every other field in this list
-    // (except to itself). If the list only has one item, nothing needs to
-    // be compared.
-    if (fields.length > 1) {
-      for (let i = 0; i < fields.length; i++) {
-        for (let j = i + 1; j < fields.length; j++) {
-          const conflict = findConflict(
-            context,
-            cachedFieldsAndFragmentNames,
-            comparedFieldsAndFragmentPairs,
-            comparedFragmentPairs,
-            false, // within one collection is never mutually exclusive
-            responseName,
-            fields[i],
-            fields[j],
-          );
-          if (conflict) {
-            conflicts.push(conflict);
+export const collectConflictsWithin = makeSchedulable(
+  function* collectConflictsWithinImpl(
+    context: ValidationContext,
+    conflicts: Array<Conflict>,
+    cachedFieldsAndFragmentNames: Map<SelectionSetNode, FieldsAndFragmentNames>,
+    comparedFieldsAndFragmentPairs: OrderedPairSet<
+      NodeAndDefCollection,
+      string
+    >,
+    comparedFragmentPairs: PairSet<string>,
+    fieldMap: NodeAndDefCollection,
+  ): SchedulableIterable<void> {
+    const signal = scheduler.getSignal();
+    // A field map is a keyed collection, where each key represents a response
+    // name and the value at that key is a list of all fields which provide that
+    // response name. For every response name, if there are multiple fields, they
+    // must be compared to find a potential conflict.
+    for (const [responseName, fields] of Object.entries(fieldMap)) {
+      if (signal.shouldYield) {
+        yield scheduler.yieldNow;
+      }
+      // This compares every field in the list to every other field in this list
+      // (except to itself). If the list only has one item, nothing needs to
+      // be compared.
+      if (fields.length > 1) {
+        for (let i = 0; i < fields.length; i++) {
+          for (let j = i + 1; j < fields.length; j++) {
+            const conflict = yield* scheduler.execute(findConflict, null, [
+              context,
+              cachedFieldsAndFragmentNames,
+              comparedFieldsAndFragmentPairs,
+              comparedFragmentPairs,
+              false, // within one collection is never mutually exclusive
+              responseName,
+              fields[i],
+              fields[j],
+            ]);
+            if (conflict) {
+              conflicts.push(conflict);
+            }
           }
         }
       }
     }
-  }
-}
+  },
+);
 
 // Collect all Conflicts between two collections of fields. This is similar to,
 // but different from the `collectConflictsWithin` function above. This check
 // assumes that `collectConflictsWithin` has already been called on each
 // provided collection of fields. This is true because this validator traverses
 // each individual selection set.
-function collectConflictsBetween(
-  context: ValidationContext,
-  conflicts: Array<Conflict>,
-  cachedFieldsAndFragmentNames: Map<SelectionSetNode, FieldsAndFragmentNames>,
-  comparedFieldsAndFragmentPairs: OrderedPairSet<NodeAndDefCollection, string>,
-  comparedFragmentPairs: PairSet<string>,
-  parentFieldsAreMutuallyExclusive: boolean,
-  fieldMap1: NodeAndDefCollection,
-  fieldMap2: NodeAndDefCollection,
-): void {
-  // A field map is a keyed collection, where each key represents a response
-  // name and the value at that key is a list of all fields which provide that
-  // response name. For any response name which appears in both provided field
-  // maps, each field from the first field map must be compared to every field
-  // in the second field map to find potential conflicts.
-  for (const [responseName, fields1] of Object.entries(fieldMap1)) {
-    const fields2 = fieldMap2[responseName];
-    if (fields2) {
-      for (const field1 of fields1) {
-        for (const field2 of fields2) {
-          const conflict = findConflict(
-            context,
-            cachedFieldsAndFragmentNames,
-            comparedFieldsAndFragmentPairs,
-            comparedFragmentPairs,
-            parentFieldsAreMutuallyExclusive,
-            responseName,
-            field1,
-            field2,
-          );
-          if (conflict) {
-            conflicts.push(conflict);
+const collectConflictsBetween = makeSchedulable(
+  function* collectConflictsBetweenImpl(
+    context: ValidationContext,
+    conflicts: Array<Conflict>,
+    cachedFieldsAndFragmentNames: Map<SelectionSetNode, FieldsAndFragmentNames>,
+    comparedFieldsAndFragmentPairs: OrderedPairSet<
+      NodeAndDefCollection,
+      string
+    >,
+    comparedFragmentPairs: PairSet<string>,
+    parentFieldsAreMutuallyExclusive: boolean,
+    fieldMap1: NodeAndDefCollection,
+    fieldMap2: NodeAndDefCollection,
+  ): SchedulableIterable<void> {
+    // A field map is a keyed collection, where each key represents a response
+    // name and the value at that key is a list of all fields which provide that
+    // response name. For any response name which appears in both provided field
+    // maps, each field from the first field map must be compared to every field
+    // in the second field map to find potential conflicts.
+    const signal = scheduler.getSignal();
+    for (const [responseName, fields1] of Object.entries(fieldMap1)) {
+      if (signal.shouldYield) {
+        yield scheduler.yieldNow;
+      }
+      const fields2 = fieldMap2[responseName];
+      if (fields2) {
+        for (const field1 of fields1) {
+          for (const field2 of fields2) {
+            const conflict = yield* scheduler.execute(findConflict, null, [
+              context,
+              cachedFieldsAndFragmentNames,
+              comparedFieldsAndFragmentPairs,
+              comparedFragmentPairs,
+              parentFieldsAreMutuallyExclusive,
+              responseName,
+              field1,
+              field2,
+            ]);
+            if (conflict) {
+              conflicts.push(conflict);
+            }
           }
         }
       }
     }
-  }
-}
+  },
+);
 
 // Determines if there is a conflict between two particular fields, including
 // comparing their sub-fields.
-function findConflict(
+const findConflict = makeSchedulable(function* findConflictImpl(
   context: ValidationContext,
   cachedFieldsAndFragmentNames: Map<SelectionSetNode, FieldsAndFragmentNames>,
   comparedFieldsAndFragmentPairs: OrderedPairSet<NodeAndDefCollection, string>,
@@ -585,7 +639,7 @@ function findConflict(
   responseName: string,
   field1: NodeAndDef,
   field2: NodeAndDef,
-): Maybe<Conflict> {
+): SchedulableIterable<Maybe<Conflict>> {
   const [parentType1, node1, def1] = field1;
   const [parentType2, node2, def2] = field2;
 
@@ -648,20 +702,24 @@ function findConflict(
   const selectionSet1 = node1.selectionSet;
   const selectionSet2 = node2.selectionSet;
   if (selectionSet1 && selectionSet2) {
-    const conflicts = findConflictsBetweenSubSelectionSets(
-      context,
-      cachedFieldsAndFragmentNames,
-      comparedFieldsAndFragmentPairs,
-      comparedFragmentPairs,
-      areMutuallyExclusive,
-      getNamedType(type1),
-      selectionSet1,
-      getNamedType(type2),
-      selectionSet2,
+    const conflicts = yield* scheduler.execute(
+      findConflictsBetweenSubSelectionSets,
+      null,
+      [
+        context,
+        cachedFieldsAndFragmentNames,
+        comparedFieldsAndFragmentPairs,
+        comparedFragmentPairs,
+        areMutuallyExclusive,
+        getNamedType(type1),
+        selectionSet1,
+        getNamedType(type2),
+        selectionSet2,
+      ],
     );
     return subfieldConflicts(conflicts, responseName, node1, node2);
   }
-}
+});
 
 function sameArguments(
   node1: FieldNode | DirectiveNode,

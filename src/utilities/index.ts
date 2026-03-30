@@ -110,3 +110,5 @@ export {
   resolveASTSchemaCoordinate,
 } from './resolveSchemaCoordinate';
 export type { ResolvedSchemaElement } from './resolveSchemaCoordinate';
+
+export { runWithScheduler, type SchedulableFunction } from './scheduling';

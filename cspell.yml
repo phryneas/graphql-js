@@ -51,6 +51,8 @@ words:
   - graphiql
   - sublinks
   - instanceof
+  - Schedulable
+  - schedulable
 
   # Different names used inside tests
   - Skywalker

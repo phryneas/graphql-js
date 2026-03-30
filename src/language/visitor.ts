@@ -1,6 +1,14 @@
 import { devAssert } from '../jsutils/devAssert';
 import { inspect } from '../jsutils/inspect';
 
+import type { SchedulableIterable } from '../utilities/scheduling';
+import {
+  asSchedulable,
+  makeSchedulable,
+  scheduler,
+  syncScheduler,
+} from '../utilities/scheduling';
+
 import type { ASTNode } from './ast';
 import { isNode, QueryDocumentKeys } from './ast';
 import { Kind } from './kinds';
@@ -181,6 +189,15 @@ export function visit(
   visitor: ASTVisitor | ASTReducer<any>,
   visitorKeys: ASTVisitorKeyMap = QueryDocumentKeys,
 ): any {
+  return syncScheduler(visitSchedulableImpl(root, visitor, visitorKeys));
+}
+asSchedulable(visit, visitSchedulableImpl);
+
+function* visitSchedulableImpl(
+  root: ASTNode,
+  visitor: ASTVisitor | ASTReducer<any>,
+  visitorKeys: ASTVisitorKeyMap = QueryDocumentKeys,
+): SchedulableIterable<any> {
   const enterLeaveMap = new Map<Kind, EnterLeaveVisitor<ASTNode>>();
   for (const kind of Object.values(Kind)) {
     enterLeaveMap.set(kind, getEnterLeaveForKind(visitor, kind));
@@ -199,7 +216,11 @@ export function visit(
   const ancestors = [];
   /* eslint-enable no-undef-init */
 
+  const signal = scheduler.getSignal();
   do {
+    if (signal.shouldYield) {
+      yield scheduler.yieldNow;
+    }
     index++;
     const isLeaving = index === keys.length;
     const isEdited = isLeaving && edits.length !== 0;
@@ -250,7 +271,15 @@ export function visit(
         ? enterLeaveMap.get(node.kind)?.leave
         : enterLeaveMap.get(node.kind)?.enter;
 
-      result = visitFn?.call(visitor, node, key, parent, path, ancestors);
+      result = visitFn
+        ? yield* scheduler.execute(visitFn, visitor, [
+            node,
+            key,
+            parent,
+            path,
+            ancestors,
+          ])
+        : undefined;
 
       if (result === BREAK) {
         break;
@@ -330,27 +359,34 @@ export function visitInParallel(
     }
 
     const mergedEnterLeave: EnterLeaveVisitor<ASTNode> = {
-      enter(...args) {
+      enter: makeSchedulable(function* enter(...args) {
         const node = args[0];
         for (let i = 0; i < visitors.length; i++) {
           if (skipping[i] === null) {
-            const result = enterList[i]?.apply(visitors[i], args);
+            const result = enterList[i]
+              ? yield* scheduler.execute(enterList[i], visitors[i], args)
+              : undefined;
             if (result === false) {
+              // eslint-disable-next-line require-atomic-updates
               skipping[i] = node;
             } else if (result === BREAK) {
+              // eslint-disable-next-line require-atomic-updates
               skipping[i] = BREAK;
             } else if (result !== undefined) {
               return result;
             }
           }
         }
-      },
-      leave(...args) {
+      }),
+      leave: makeSchedulable(function* leave(...args) {
         const node = args[0];
         for (let i = 0; i < visitors.length; i++) {
           if (skipping[i] === null) {
-            const result = leaveList[i]?.apply(visitors[i], args);
+            const result = leaveList[i]
+              ? yield* scheduler.execute(leaveList[i], visitors[i], args)
+              : undefined;
             if (result === BREAK) {
+              // eslint-disable-next-line require-atomic-updates
               skipping[i] = BREAK;
             } else if (result !== undefined && result !== false) {
               return result;
@@ -359,7 +395,7 @@ export function visitInParallel(
             skipping[i] = null;
           }
         }
-      },
+      }),
     };
 
     mergedVisitor[kind] = mergedEnterLeave;

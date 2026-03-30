@@ -7,6 +7,7 @@ import { parse } from '../../language/parser';
 import type { GraphQLSchema } from '../../type/schema';
 
 import { buildSchema } from '../../utilities/buildASTSchema';
+import { runWithScheduler } from '../../utilities/scheduling';
 
 import { validate, validateSDL } from '../validate';
 import type { SDLValidationRule, ValidationRule } from '../ValidationContext';
@@ -128,6 +129,17 @@ export function expectValidationErrorsWithSchema(
 ): any {
   const doc = parse(queryStr);
   const errors = validate(schema, doc, [rule]);
+  return expectJSON(errors);
+}
+
+export async function expectValidationErrorsWithSchemaAsync(
+  schema: GraphQLSchema,
+  rule: ValidationRule,
+  queryStr: string,
+): Promise<any> {
+  const doc = parse(queryStr);
+  let i = 0;
+  const errors = await runWithScheduler(validate, [schema, doc, [rule]]);
   return expectJSON(errors);
 }
 

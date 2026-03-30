@@ -9,6 +9,8 @@ import { visit, visitInParallel } from '../language/visitor';
 import type { GraphQLSchema } from '../type/schema';
 import { assertValidSchema } from '../type/validate';
 
+import type { SchedulableIterable } from '../utilities/scheduling';
+import { makeSchedulable, scheduler } from '../utilities/scheduling';
 import { TypeInfo, visitWithTypeInfo } from '../utilities/TypeInfo';
 
 import { specifiedRules, specifiedSDLRules } from './specifiedRules';
@@ -35,7 +37,7 @@ import { SDLValidationContext, ValidationContext } from './ValidationContext';
  * Optionally a custom TypeInfo instance may be provided. If not provided, one
  * will be created from the provided schema.
  */
-export function validate(
+export const validate = makeSchedulable(function* makeSchedulableImpl(
   schema: GraphQLSchema,
   documentAST: DocumentNode,
   rules: ReadonlyArray<ValidationRule> = specifiedRules,
@@ -43,7 +45,7 @@ export function validate(
 
   /** @deprecated will be removed in 17.0.0 */
   typeInfo: TypeInfo = new TypeInfo(schema),
-): ReadonlyArray<GraphQLError> {
+): SchedulableIterable<Array<GraphQLError>> {
   const maxErrors = options?.maxErrors ?? 100;
 
   devAssert(documentAST, 'Must provide document.');
@@ -76,14 +78,17 @@ export function validate(
 
   // Visit the whole document with each instance of all provided rules.
   try {
-    visit(documentAST, visitWithTypeInfo(typeInfo, visitor));
+    yield* scheduler.execute(visit, null, [
+      documentAST,
+      visitWithTypeInfo(typeInfo, visitor) as any,
+    ]);
   } catch (e) {
     if (e !== abortObj) {
       throw e;
     }
   }
   return errors;
-}
+});
 
 /**
  * @internal

@@ -1,5 +1,7 @@
 import { describe, it } from 'mocha';
 
+import type { expectJSON } from '../../__testUtils__/expectJSON';
+
 import type { GraphQLSchema } from '../../type/schema';
 
 import { buildSchema } from '../../utilities/buildASTSchema';
@@ -7,16 +9,40 @@ import { buildSchema } from '../../utilities/buildASTSchema';
 import { OverlappingFieldsCanBeMergedRule } from '../rules/OverlappingFieldsCanBeMergedRule';
 
 import {
-  expectValidationErrors,
   expectValidationErrorsWithSchema,
+  expectValidationErrorsWithSchemaAsync,
+  testSchema,
 } from './harness';
 
-function expectErrors(queryStr: string) {
-  return expectValidationErrors(OverlappingFieldsCanBeMergedRule, queryStr);
+function expectErrorsSyncAndAsync(queryStr: string) {
+  const promise = expectValidationErrorsWithSchemaAsync(
+    testSchema,
+    OverlappingFieldsCanBeMergedRule,
+    queryStr,
+  );
+  const syncRet = expectValidationErrorsWithSchema(
+    testSchema,
+    OverlappingFieldsCanBeMergedRule,
+    queryStr,
+  );
+  return Object.assign(promise, {
+    toDeepEqual(expected: unknown) {
+      syncRet.toDeepEqual(expected);
+      return promise.then((ret: ReturnType<typeof expectJSON>) =>
+        ret.toDeepEqual(expected),
+      );
+    },
+    toDeepNestedProperty(path: string, expected: unknown) {
+      syncRet.toDeepNestedProperty(path, expected);
+      return promise.then((ret: ReturnType<typeof expectJSON>) =>
+        ret.toDeepNestedProperty(path, expected),
+      );
+    },
+  });
 }
 
-function expectValid(queryStr: string) {
-  expectErrors(queryStr).toDeepEqual([]);
+async function expectValidSyncAndAsync(queryStr: string) {
+  (await expectErrorsSyncAndAsync(queryStr)).toDeepEqual([]);
 }
 
 function expectErrorsWithSchema(schema: GraphQLSchema, queryStr: string) {
@@ -32,8 +58,8 @@ function expectValidWithSchema(schema: GraphQLSchema, queryStr: string) {
 }
 
 describe('Validate: Overlapping fields can be merged', () => {
-  it('unique fields', () => {
-    expectValid(`
+  it('unique fields', async () => {
+    await expectValidSyncAndAsync(`
       fragment uniqueFields on Dog {
         name
         nickname
@@ -41,8 +67,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     `);
   });
 
-  it('identical fields', () => {
-    expectValid(`
+  it('identical fields', async () => {
+    await expectValidSyncAndAsync(`
       fragment mergeIdenticalFields on Dog {
         name
         name
@@ -50,8 +76,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     `);
   });
 
-  it('identical fields with identical args', () => {
-    expectValid(`
+  it('identical fields with identical args', async () => {
+    await expectValidSyncAndAsync(`
       fragment mergeIdenticalFieldsWithIdenticalArgs on Dog {
         doesKnowCommand(dogCommand: SIT)
         doesKnowCommand(dogCommand: SIT)
@@ -59,8 +85,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     `);
   });
 
-  it('identical fields with identical directives', () => {
-    expectValid(`
+  it('identical fields with identical directives', async () => {
+    await expectValidSyncAndAsync(`
       fragment mergeSameFieldsWithSameDirectives on Dog {
         name @include(if: true)
         name @include(if: true)
@@ -68,8 +94,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     `);
   });
 
-  it('different args with different aliases', () => {
-    expectValid(`
+  it('different args with different aliases', async () => {
+    await expectValidSyncAndAsync(`
       fragment differentArgsWithDifferentAliases on Dog {
         knowsSit: doesKnowCommand(dogCommand: SIT)
         knowsDown: doesKnowCommand(dogCommand: DOWN)
@@ -77,8 +103,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     `);
   });
 
-  it('different directives with different aliases', () => {
-    expectValid(`
+  it('different directives with different aliases', async () => {
+    await expectValidSyncAndAsync(`
       fragment differentDirectivesWithDifferentAliases on Dog {
         nameIfTrue: name @include(if: true)
         nameIfFalse: name @include(if: false)
@@ -86,11 +112,11 @@ describe('Validate: Overlapping fields can be merged', () => {
     `);
   });
 
-  it('different skip/include directives accepted', () => {
+  it('different skip/include directives accepted', async () => {
     // Note: Differing skip/include directives don't create an ambiguous return
     // value and are acceptable in conditions where differing runtime values
     // may have the same desired effect of including or skipping a field.
-    expectValid(`
+    await expectValidSyncAndAsync(`
       fragment differentDirectivesWithDifferentAliases on Dog {
         name @include(if: true)
         name @include(if: false)
@@ -98,8 +124,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     `);
   });
 
-  it('Same aliases with different field targets', () => {
-    expectErrors(`
+  it('Same aliases with different field targets', async () => {
+    await expectErrorsSyncAndAsync(`
       fragment sameAliasesWithDifferentFieldTargets on Dog {
         fido: name
         fido: nickname
@@ -116,10 +142,10 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('Same aliases allowed on non-overlapping fields', () => {
+  it('Same aliases allowed on non-overlapping fields', async () => {
     // This is valid since no object can be both a "Dog" and a "Cat", thus
     // these fields can never overlap.
-    expectValid(`
+    await expectValidSyncAndAsync(`
       fragment sameAliasesWithDifferentFieldTargets on Pet {
         ... on Dog {
           name
@@ -131,8 +157,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     `);
   });
 
-  it('Alias masking direct field access', () => {
-    expectErrors(`
+  it('Alias masking direct field access', async () => {
+    await expectErrorsSyncAndAsync(`
       fragment aliasMaskingDirectFieldAccess on Dog {
         name: nickname
         name
@@ -149,8 +175,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('different args, second adds an argument', () => {
-    expectErrors(`
+  it('different args, second adds an argument', async () => {
+    await expectErrorsSyncAndAsync(`
       fragment conflictingArgs on Dog {
         doesKnowCommand
         doesKnowCommand(dogCommand: HEEL)
@@ -167,8 +193,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('different args, second missing an argument', () => {
-    expectErrors(`
+  it('different args, second missing an argument', async () => {
+    await expectErrorsSyncAndAsync(`
       fragment conflictingArgs on Dog {
         doesKnowCommand(dogCommand: SIT)
         doesKnowCommand
@@ -185,8 +211,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('conflicting arg values', () => {
-    expectErrors(`
+  it('conflicting arg values', async () => {
+    await expectErrorsSyncAndAsync(`
       fragment conflictingArgs on Dog {
         doesKnowCommand(dogCommand: SIT)
         doesKnowCommand(dogCommand: HEEL)
@@ -203,8 +229,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('conflicting arg names', () => {
-    expectErrors(`
+  it('conflicting arg names', async () => {
+    await expectErrorsSyncAndAsync(`
       fragment conflictingArgs on Dog {
         isAtLocation(x: 0)
         isAtLocation(y: 0)
@@ -221,10 +247,10 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('allows different args where no conflict is possible', () => {
+  it('allows different args where no conflict is possible', async () => {
     // This is valid since no object can be both a "Dog" and a "Cat", thus
     // these fields can never overlap.
-    expectValid(`
+    await expectValidSyncAndAsync(`
       fragment conflictingArgs on Pet {
         ... on Dog {
           name(surname: true)
@@ -281,8 +307,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     );
   });
 
-  it('encounters conflict in fragments', () => {
-    expectErrors(`
+  it('encounters conflict in fragments', async () => {
+    await expectErrorsSyncAndAsync(`
       {
         ...A
         ...B
@@ -305,8 +331,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('reports each conflict once', () => {
-    expectErrors(`
+  it('reports each conflict once', async () => {
+    await expectErrorsSyncAndAsync(`
       {
         f1 {
           ...A
@@ -356,8 +382,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('deep conflict', () => {
-    expectErrors(`
+  it('deep conflict', async () => {
+    await expectErrorsSyncAndAsync(`
       {
         field {
           x: a
@@ -380,8 +406,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('deep conflict with multiple issues', () => {
-    expectErrors(`
+  it('deep conflict with multiple issues', async () => {
+    await expectErrorsSyncAndAsync(`
       {
         field {
           x: a
@@ -408,8 +434,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('very deep conflict', () => {
-    expectErrors(`
+  it('very deep conflict', async () => {
+    await expectErrorsSyncAndAsync(`
       {
         field {
           deepField {
@@ -438,8 +464,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('reports deep conflict to nearest common ancestor', () => {
-    expectErrors(`
+  it('reports deep conflict to nearest common ancestor', async () => {
+    await expectErrorsSyncAndAsync(`
       {
         field {
           deepField {
@@ -469,8 +495,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('reports deep conflict to nearest common ancestor in fragments', () => {
-    expectErrors(`
+  it('reports deep conflict to nearest common ancestor in fragments', async () => {
+    await expectErrorsSyncAndAsync(`
       {
         field {
           ...F
@@ -508,8 +534,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('reports deep conflict in nested fragments', () => {
-    expectErrors(`
+  it('reports deep conflict in nested fragments', async () => {
+    await expectErrorsSyncAndAsync(`
       {
         field {
           ...F
@@ -548,8 +574,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('reports deep conflict after nested fragments', () => {
-    expectErrors(`
+  it('reports deep conflict after nested fragments', async () => {
+    await expectErrorsSyncAndAsync(`
       fragment F on T {
         ...G
       }
@@ -575,8 +601,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('ignores unknown fragments', () => {
-    expectValid(`
+  it('ignores unknown fragments', async () => {
+    await expectValidSyncAndAsync(`
       {
         field
         ...Unknown
@@ -1081,8 +1107,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     });
   });
 
-  it('does not infinite loop on recursive fragment', () => {
-    expectValid(`
+  it('does not infinite loop on recursive fragment', async () => {
+    await expectValidSyncAndAsync(`
       {
         ...fragA
       }
@@ -1091,8 +1117,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     `);
   });
 
-  it('does not infinite loop on immediately recursive fragment', () => {
-    expectValid(`
+  it('does not infinite loop on immediately recursive fragment', async () => {
+    await expectValidSyncAndAsync(`
       {
         ...fragA
       }
@@ -1101,8 +1127,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     `);
   });
 
-  it('does not infinite loop on recursive fragment with a field named after fragment', () => {
-    expectValid(`
+  it('does not infinite loop on recursive fragment with a field named after fragment', async () => {
+    await expectValidSyncAndAsync(`
       {
         ...fragA
         fragA
@@ -1112,8 +1138,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     `);
   });
 
-  it('finds invalid cases even with field named after fragment', () => {
-    expectErrors(`
+  it('finds invalid cases even with field named after fragment', async () => {
+    await expectErrorsSyncAndAsync(`
       {
         fragA
         ...fragA
@@ -1134,8 +1160,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('does not infinite loop on transitively recursive fragment', () => {
-    expectValid(`
+  it('does not infinite loop on transitively recursive fragment', async () => {
+    await expectValidSyncAndAsync(`
       {
         ...fragA
         fragB
@@ -1147,8 +1173,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     `);
   });
 
-  it('finds invalid case even with immediately recursive fragment', () => {
-    expectErrors(`
+  it('finds invalid case even with immediately recursive fragment', async () => {
+    await expectErrorsSyncAndAsync(`
       fragment sameAliasesWithDifferentFieldTargets on Dog {
         ...sameAliasesWithDifferentFieldTargets
         fido: name
@@ -1166,8 +1192,8 @@ describe('Validate: Overlapping fields can be merged', () => {
     ]);
   });
 
-  it('does not infinite loop on recursive fragments separated by fields', () => {
-    expectValid(`
+  it('does not infinite loop on recursive fragments separated by fields', async () => {
+    await expectValidSyncAndAsync(`
       {
         ...fragA
         ...fragB
