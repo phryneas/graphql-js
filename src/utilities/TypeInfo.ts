@@ -36,6 +36,7 @@ import {
 } from '../type/introspection';
 import type { GraphQLSchema } from '../type/schema';
 
+import { makeSchedulable, scheduler } from './scheduling';
 import { typeFromAST } from './typeFromAST';
 
 /**
@@ -334,12 +335,12 @@ export function visitWithTypeInfo(
   visitor: ASTVisitor,
 ): ASTVisitor {
   return {
-    enter(...args) {
+    enter: makeSchedulable(function* enterImpl(...args) {
       const node = args[0];
       typeInfo.enter(node);
       const fn = getEnterLeaveForKind(visitor, node.kind).enter;
       if (fn) {
-        const result = fn.apply(visitor, args);
+        const result = yield* scheduler.execute(fn, visitor, args);
         if (result !== undefined) {
           typeInfo.leave(node);
           if (isNode(result)) {
@@ -348,16 +349,16 @@ export function visitWithTypeInfo(
         }
         return result;
       }
-    },
-    leave(...args) {
+    }),
+    leave: makeSchedulable(function* leaveImpl(...args) {
       const node = args[0];
       const fn = getEnterLeaveForKind(visitor, node.kind).leave;
       let result;
       if (fn) {
-        result = fn.apply(visitor, args);
+        result = yield* scheduler.execute(fn, visitor, args);
       }
       typeInfo.leave(node);
       return result;
-    },
+    }),
   };
 }

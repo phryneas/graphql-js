@@ -38,6 +38,14 @@ type Command =
       args: Array<unknown>;
       this?: unknown;
       startImmediately?: boolean;
+    }
+  | {
+      kind: 'syncAware';
+      sync: (...args: Array<unknown>) => unknown;
+      async: (...args: Array<unknown>) => unknown;
+      args: Array<unknown>;
+      this?: unknown;
+      startImmediately?: boolean;
     };
 
 export type SchedulableIterable<T> = Generator<Command, T>;
@@ -47,7 +55,7 @@ const yieldNow: Command = { kind: 'yield' };
 export const scheduler = {
   yieldNow,
   execute<Ret, Args extends Array<unknown>, ThisArg>(
-    fn: (...args: Args) => Ret,
+    fn: (this: ThisArg, ...args: Args) => Ret,
     thisArg: ThisArg,
     args: Args,
     startImmediately = false,
@@ -59,6 +67,21 @@ export const scheduler = {
         args,
         this: thisArg,
         startImmediately,
+      };
+      return result as Ret;
+    })();
+  },
+  syncAware<Ret, Args extends Array<unknown>, ThisArg>(options: {
+    sync: (this: ThisArg, ...args: Args) => Ret;
+    async: (this: ThisArg, ...args: Args) => Promise<Ret>;
+    args: Args;
+    this?: ThisArg;
+    startImmediately?: boolean;
+  }): SchedulableIterable<Ret> {
+    return (function* executeCommand(): Generator<Command, Ret> {
+      const result = yield {
+        kind: 'syncAware' as const,
+        ...(options as any),
       };
       return result as Ret;
     })();
@@ -161,6 +184,11 @@ export function syncScheduler<T>(iterable: SchedulableIterable<T>): T {
             : fn.apply(thisArg, args);
           break;
         }
+        case 'syncAware': {
+          const { sync, args, this: thisArg } = result.value;
+          nextArg = sync.apply(thisArg, args);
+          break;
+        }
       }
       // eslint-disable-next-line no-constant-condition
     } while (true);
@@ -250,7 +278,7 @@ function chunkedScheduler<T>(
           schedule(continueLoop);
           yield;
           scheduleSignal.bump();
-          break;
+          continue;
         }
         case 'execute': {
           const { fn, args, this: thisArg, startImmediately } = result.value;
@@ -269,6 +297,18 @@ function chunkedScheduler<T>(
           } else {
             nextArg = fn.apply(thisArg, args);
           }
+          continue;
+        }
+        case 'syncAware': {
+          const { async, args, this: thisArg, startImmediately } = result.value;
+          if (!startImmediately && scheduleSignal.shouldYield) {
+            schedule(continueLoop);
+            yield;
+            scheduleSignal.bump();
+          }
+          nextArg = await async.apply(thisArg, args);
+          // we are just back from an async call, so we don't need to yield again for a while
+          scheduleSignal.bump();
           continue;
         }
       }
