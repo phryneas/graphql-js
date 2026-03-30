@@ -172,7 +172,7 @@ export function syncScheduler<T>(iterable: SchedulableIterable<T>): T {
 export function runWithScheduler<Ret, Args extends Array<unknown>>(
   fn: ((..._: Args) => Ret) | SchedulableFunction<Ret, Args>,
   args: Args,
-  abortSignal?: AbortSignal,
+  abortSignal?: AbortSignal | ScheduleSignal,
 ): Promise<Ret> {
   if (!isSchedulableFunction(fn)) {
     // eslint-disable-next-line no-undef, no-console

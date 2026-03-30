@@ -111,4 +111,11 @@ export {
 } from './resolveSchemaCoordinate';
 export type { ResolvedSchemaElement } from './resolveSchemaCoordinate';
 
-export { runWithScheduler, type SchedulableFunction } from './scheduling';
+export {
+  runWithScheduler,
+  makeSchedulable,
+  asSchedulable,
+  type SchedulableFunction,
+  type SchedulableIterable,
+  scheduler,
+} from './scheduling';
