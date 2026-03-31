@@ -148,9 +148,13 @@ export function makeSchedulable<
     ...args: Args
   ) => SchedulableIterable<Ret>,
 ): SchedulableFunction<Ret, Args, ThisArg> {
-  const schedulable = function schedulable(this: ThisArg, ...args: Args) {
-    return syncScheduler(schedulableImplementation.apply(this, args));
-  };
+  const name = schedulableImplementation.name || 'schedulableFunction';
+  const schedulable = {
+    [name](this: ThisArg, ...args: Args) {
+      return syncScheduler(schedulableImplementation.apply(this, args));
+    },
+  }[name];
+
   asSchedulable(schedulable, schedulableImplementation);
   return schedulable;
 }
