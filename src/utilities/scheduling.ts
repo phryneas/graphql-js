@@ -153,10 +153,10 @@ export function makeSchedulable<
     [name](this: ThisArg, ...args: Args) {
       return syncScheduler(schedulableImplementation.apply(this, args));
     },
-  }[name];
+  };
 
-  asSchedulable(schedulable, schedulableImplementation);
-  return schedulable;
+  asSchedulable(schedulable[name], schedulableImplementation);
+  return schedulable[name];
 }
 
 function isSchedulableFunction<Ret, Args extends Array<unknown>>(
